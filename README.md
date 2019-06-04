@@ -1,5 +1,7 @@
 # PSHyperV
 
+[![PSGallery Version](https://img.shields.io/powershellgallery/v/PSHyperV.png?style=for-the-badge&logo=powershell&label=PowerShell%20Gallery)](https://www.powershellgallery.com/packages/PSHyperV/) [![PSGallery Downloads](https://img.shields.io/powershellgallery/dt/PSHyperV.png?style=for-the-badge&label=Downloads)](https://www.powershellgallery.com/packages/PSHyperV/)
+
 **Under development**
 
 A set of PowerShell tools for working with Hyper-V.
