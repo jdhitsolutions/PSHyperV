@@ -47,7 +47,7 @@
     # ProcessorArchitecture = ''
 
     # Modules that must be imported into the global environment prior to importing this module
-    RequiredModules = @('Hyper-V')
+    #RequiredModules = @()
 
     # Assemblies that must be loaded prior to importing this module
     # RequiredAssemblies = @()
@@ -101,6 +101,7 @@
             # A URL to the main website for this project.
             ProjectUri = 'https://github.com/jdhitsolutions/PSHyperV'
 
+            ExternalModuleDependencies = 'Hyper-V'
             # A URL to an icon representing this module.
             # IconUri = ''
 

@@ -6,6 +6,7 @@
 + Updated `README.md`
 + Updated help to reflect new module name.
 + Published to the PowerSHell Gallery
++ Updated module manifest.
 
 ## v0.2.0
 
