@@ -1,4 +1,11 @@
-# Change Log for PSHyperV
+# Change Log for PSHyperVTools
+
+## v0.3.0
+
++ Renamed module to `PSHyperVTools`
++ Updated `README.md`
++ Updated help to reflect new module name.
++ Published to the PowerSHell Gallery
 
 ## v0.2.0
 

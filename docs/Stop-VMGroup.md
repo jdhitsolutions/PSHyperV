@@ -1,6 +1,6 @@
 ---
-external help file: PSHyperV-help.xml
-Module Name: PSHyperV
+external help file: PSHyperVTools-help.xml
+Module Name: PSHyperVTools
 online version:
 schema: 2.0.0
 ---

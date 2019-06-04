@@ -1,10 +1,8 @@
-# PSHyperV
+# PSHyperVTools
 
-[![PSGallery Version](https://img.shields.io/powershellgallery/v/PSHyperV.png?style=for-the-badge&logo=powershell&label=PowerShell%20Gallery)](https://www.powershellgallery.com/packages/PSHyperV/) [![PSGallery Downloads](https://img.shields.io/powershellgallery/dt/PSHyperV.png?style=for-the-badge&label=Downloads)](https://www.powershellgallery.com/packages/PSHyperV/)
+[![PSGallery Version](https://img.shields.io/powershellgallery/v/PSHyperVTools.png?style=for-the-badge&logo=powershell&label=PowerShell%20Gallery)](https://www.powershellgallery.com/packages/PSHyperVTools/) [![PSGallery Downloads](https://img.shields.io/powershellgallery/dt/PSHyperVTools.png?style=for-the-badge&label=Downloads)](https://www.powershellgallery.com/packages/PSHyperVTools/)
 
-**Under development**
-
-A set of PowerShell tools for working with Hyper-V.
+A set of PowerShell tools for working with Hyper-V from a Windows 10 desktop. You must have the Hyper-V PowerShell module installed. **This module is under active development**
 
 ## [Expand-VMGroup](docs\Expand-VMGroup.md)
 

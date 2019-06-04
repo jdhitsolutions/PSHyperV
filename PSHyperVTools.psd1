@@ -5,10 +5,10 @@
 @{
 
     # Script module or binary module file associated with this manifest.
-    RootModule = 'PSHyperV.psm1'
+    RootModule = 'PSHyperVTools.psm1'
 
     # Version number of this module.
-    ModuleVersion = '0.2.0'
+    ModuleVersion = '0.3.0'
 
     # Supported PSEditions
     CompatiblePSEditions = @('Desktop')
