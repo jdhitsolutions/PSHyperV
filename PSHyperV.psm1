@@ -1,4 +1,6 @@
 
+#dot source module functions
+
 . $PSScriptRoot\functions\public.ps1
 
 #add a custom type extension
