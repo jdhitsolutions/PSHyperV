@@ -12,7 +12,7 @@ You can install the current release from the PowerShell Gallery:
 Install-Module PSHyperVTools [-scope currentuser]
 ```
 
-Please post any questions, problems, suggestions or comments in the Issues section of this repository.
+Please post any questions, problems, suggestions or comments in the [Issues](https://github.com/jdhitsolutions/PSHyperV/issues) section of this repository.
 
 ## Commands
 
@@ -67,5 +67,25 @@ running.
 ### [Stop-VMGroup](docs\Stop-VMGroup.md)
 
 This command will expand virtual machine members of a VM group and stop the virtual machine if it running.
+
+## Custom Type Extensions
+
+When you import the module, it will also extend the type for a Hyper-V virtual machine and add these script properties. Some of these properties need values from the Hyper-V host. For better performance a PSSession to the Hyper-V host will be created and re-used. You might want to remove any PSSessions in your console before exiting PowerShell if you use this module.
+
++ ManagementGroups
++ Age
++ TestVHD
++ ConfigurationFile
++ DiskPath
++ Running
++ SizeGB
++ MemoryMB
++ MemoryDemandMB
++ HasSnapshot
++ IPAddress
++ Runtime
++ VMSwitch
+
+![Virtual Machine Type Extensions](assets\vmextensions.png)
 
 _Last updated 2019-06-04 16:19:53Z_

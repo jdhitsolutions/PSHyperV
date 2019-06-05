@@ -1,5 +1,10 @@
 # Change Log for PSHyperVTools
 
+## v0.4.0
+
++ Added new type extensions file.
++ Updated `README.md`
+
 ## v0.3.0
 
 + Renamed module to `PSHyperVTools`

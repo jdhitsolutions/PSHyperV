@@ -1,0 +1,81 @@
+[
+    {
+        "MemberType":  "ScriptProperty",
+        "MemberName":  "ManagementGroups",
+        "Value":  "\r\n    (Get-VMGroup -ComputerName $this.computername).where( {$_.grouptype -eq \"ManagementCollectionType\" -AND $_.vmgroupmembers.vmmembers.name -contains $this.name})\r\n",
+        "TypeName":  "Microsoft.HyperV.PowerShell.VirtualMachine"
+    },
+    {
+        "MemberType":  "ScriptProperty",
+        "MemberName":  "Age",
+        "Value":  "(Get-Date) - $this.creationtime",
+        "TypeName":  "Microsoft.HyperV.PowerShell.VirtualMachine"
+    },
+    {
+        "MemberType":  "ScriptProperty",
+        "MemberName":  "TestVHD",
+        "Value": " $ps = (get-pssession).where({$_.computername -eq $this.computername -AND $_.state -eq \"opened\"}) | select-object -first 1\r\n\r\n    if (-not $ps) {\r\n        $ps = New-pssession -computername $this.computername\r\n    }\r\n\r\n    invoke-Command {        \n    if ($using:this.HardDrives) {\n        #test if there are any false results\n        if ( ($using.this.harddrives   | Test-Path) -contains $False ) {\n            $False\n        }\n        else {\n            $True\n        }\n    }\n    else {\n        #no hard drive files configured\n        $false\n    } \n } -session $ps",
+        "TypeName":  "Microsoft.HyperV.PowerShell.VirtualMachine"
+    },
+    {
+        "MemberType":  "ScriptProperty",
+        "MemberName":  "ConfigurationFile",
+        "Value":  " $ps = (get-pssession).where({$_.computername -eq $this.computername -AND $_.state -eq \"opened\"}) | select-object -first 1\r\n\r\n    if (-not $ps) {\r\n        $ps = New-pssession -computername $this.computername\r\n    }\r\n\r\n    invoke-Command { join-path \"$($using:this.configurationlocation)\\virtual machines\" -ChildPath \"$($using:this.vmid).vmcx\" -Resolve} -session $ps",
+        "TypeName":  "Microsoft.HyperV.PowerShell.VirtualMachine"
+    },
+    {
+        "MemberType":  "ScriptProperty",
+        "MemberName":  "DiskPath",
+        "Value":  "$this.Harddrives.path",
+        "TypeName":  "Microsoft.HyperV.PowerShell.VirtualMachine"
+    },
+    {
+        "MemberType":  "ScriptProperty",
+        "MemberName":  "Running",
+        "Value":  "if ($this.state -eq \u0027Running\u0027) {$True} else {$False}",
+        "TypeName":  "Microsoft.HyperV.PowerShell.VirtualMachine"
+    },
+    {
+        "MemberType":  "ScriptProperty",
+        "MemberName":  "SizeGB",
+        "Value": " $ps = (get-pssession).where({$_.computername -eq $this.computername -AND $_.state -eq \"opened\"}) | select-object -first 1\r\n\r\n    if (-not $ps) {\r\n        $ps = New-pssession -computername $this.computername\r\n    }\r\n\r\n    invoke-Command {$stat = Get-VMHardDiskDrive -VMName $using:this.vmname | Get-Item | Measure-Object -Property length -sum\r\n [math]::Round($stat.sum/1GB,2) } -session $ps",
+        "TypeName":  "Microsoft.HyperV.PowerShell.VirtualMachine"
+    },
+    {
+        "MemberType":  "ScriptProperty",
+        "MemberName":  "MemoryMB",
+        "Value":  "$this.MemoryAssigned/1mb",
+        "TypeName":  "Microsoft.HyperV.PowerShell.VirtualMachine"
+    },
+    {
+        "MemberType":  "ScriptProperty",
+        "MemberName":  "MemoryDemandMB",
+        "Value":  "$this.MemoryDemand/1mb",
+        "TypeName":  "Microsoft.HyperV.PowerShell.VirtualMachine"
+    },
+    {
+        "MemberType":  "ScriptProperty",
+        "MemberName":  "HasSnapshot",
+        "Value":  " if ($this.parentSnapshotName) { $True } else { $False}",
+        "TypeName":  "Microsoft.HyperV.PowerShell.VirtualMachine"
+    },
+    {
+        "MemberType":  "ScriptProperty",
+        "MemberName":  "IPAddress",
+        "Value":  "($this | Get-VMNetworkAdapter).IPAddresses | where {$_ -match \"\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\"}",
+        "TypeName":  "Microsoft.HyperV.PowerShell.VirtualMachine"
+    },
+    {
+        "MemberType":  "ScriptProperty",
+        "MemberName":  "Runtime",
+        "Value":  "\"{0}.{1:00}:{2:00}:{3:00}\" -f $this.uptime.Days,$this.uptime.Hours,$this.uptime.Minutes,$this.uptime.Seconds",
+        "TypeName":  "Microsoft.HyperV.PowerShell.VirtualMachine"
+    },
+    {
+        "MemberType":  "ScriptProperty",
+        "MemberName":  "VMSwitch",
+        "Value":  "($this | Get-VMNetworkAdapter).SwitchName",
+        "TypeName":  "Microsoft.HyperV.PowerShell.VirtualMachine"
+    }
+
+]

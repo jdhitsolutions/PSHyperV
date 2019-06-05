@@ -2,12 +2,21 @@
 #dot source module functions
 
 . $PSScriptRoot\functions\public.ps1
+. $PSScriptRoot\functions\private.ps1
 
-#add a custom type extension
-$typename = "Microsoft.HyperV.PowerShell.VirtualMachine"
+#add custom type extensions
 
-$sb = {
-    (Get-VMGroup -ComputerName $this.computername).where( {$_.grouptype -eq "ManagementCollectionType" -AND $_.vmgroupmembers.vmmembers.name -contains $this.name})
+$extensions = get-content $PSScriptRoot\hyperv-vm.extensions.json | ConvertFrom-Json | foreach-Object { $_ }
+foreach ($update in $extensions) {
+    $val = [scriptblock]::create($update.value)
+    Update-TypeData -typename $update.typename -MemberType $update.MemberType -MemberName $update.MemberName -Value $val -force
 }
 
-Update-TypeData -TypeName $typename -MemberType ScriptProperty -MemberName ManagementGroups -Value $sb -force
+<#
+notes
+
+Get-CimInstance -Namespace root/virtualization/v2 -ClassName msvm_computersystem |
+select elementname,timeoflastStateChange
+
+#>
+
