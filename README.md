@@ -68,6 +68,10 @@ running.
 
 This command will expand virtual machine members of a VM group and stop the virtual machine if it running.
 
+### [Set-VMNote](docs/Set-VMNote.md)
+
+This command is an alternative to using `Set-VM` to modify the Notes setting of a virtual machine. This version allows you to append to an existing note or clear it.
+
 ## Custom Type Extensions
 
 When you import the module, it will also extend the type for a Hyper-V virtual machine and add these script properties. Some of these properties need values from the Hyper-V host. For better performance a PSSession to the Hyper-V host will be created and re-used. You might want to remove any PSSessions in your console before exiting PowerShell if you use this module.
@@ -88,4 +92,14 @@ When you import the module, it will also extend the type for a Hyper-V virtual m
 
 ![Virtual Machine Type Extensions](assets/vmextensions.png)
 
-_Last updated 2019-06-04 16:19:53Z_
+## Road Map
+
+I have a few other commands I've built over the years that I would like to integrate into this module. Here's a taste of what I have in mind.
+
++ Get-VHDSummary
++ Get-VMLastUse
++ New-HyperVStatusReport
++ Show-VMMemoryPressure
++ Remove-VMEntry
+
+_Last updated 2019-06-19 20:20:39Z UTC_

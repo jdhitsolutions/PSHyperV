@@ -2,9 +2,194 @@
 #these are functions to be exported and visible to the user
 
 #todo - Get-VHDSummary, Get-VMLastUse, New-HyperVReport
+
+Function Set-VMNote {
+    [CmdletBinding(DefaultParameterSetName = 'Name', SupportsShouldProcess)]
+    [OutputType("none", "VirtualMachine")]
+    Param(
+
+        [Parameter(ParameterSetName = 'VMObject', Mandatory, Position = 0, ValueFromPipeline, HelpMessage = "A Hyper-V virtual machine object.")]
+        [ValidateNotNullOrEmpty()]
+        [Microsoft.HyperV.PowerShell.VirtualMachine[]]$VM,
+
+        [Parameter(ParameterSetName = 'Name', Mandatory, Position = 0, ValueFromPipeline, HelpMessage = "Enter the name of a virtual machine.")]
+        [Alias('VMName')]
+        [ValidateNotNullOrEmpty()]
+        [string[]]$Name,
+
+        [Parameter(HelpMessage = "Enter the text for the note.")]
+        [string]$Notes,
+
+        [Parameter(HelpMessage = "Specify what action to take with the note.")]
+        [ValidateSet("Create", "Append", "Clear")]
+        [string]$Action = "Create",
+
+        [Parameter(HelpMessage = "Write the VM object to the pipeline.")]
+        [switch]$Passthru,
+
+        [Parameter(ParameterSetName = 'Name', HelpMessage = "Enter the name of a Hyper-V host. The default is the localhost.")]
+        [ValidateNotNullOrEmpty()]
+        [string]$ComputerName = $env:COMPUTERNAME
+
+    )
+    DynamicParam {
+    #allow an alternate credential for remote servers
+        if ($Computername -ne $env:computername -OR $vm[0].computername -ne $env:computername) {
+
+            #define a parameter attribute object
+            $attributes = New-Object System.Management.Automation.ParameterAttribute
+            $attributes.HelpMessage = "Enter an alternate credential in the form domain\username or computername\username. If you used a credential to get the VM in any way, then you need to re-use it to set the note."
+
+            #define a collection for attributes
+            $attributeCollection = New-Object -Type System.Collections.ObjectModel.Collection[System.Attribute]
+            $attributeCollection.Add($attributes)
+
+            #define the dynamic param
+            $dynParam1 = New-Object -Type System.Management.Automation.RuntimeDefinedParameter("Credential", [PSCredential], $attributeCollection)
+            $dynParam1.Value = [System.Management.Automation.PSCredential]::Empty
+
+            #create array of dynamic parameters
+            $paramDictionary = New-Object -Type System.Management.Automation.RuntimeDefinedParameterDictionary
+            $paramDictionary.Add("Credential", $dynParam1)
+
+            #use the array
+            return $paramDictionary
+        }
+
+    }
+
+
+    Begin {
+        Write-Verbose "[$((Get-Date).TimeofDay) BEGIN  ] Starting $($myinvocation.mycommand)"
+
+
+        #define a scriptblock to run remotely
+        $sb = {
+            #uncomment the Write-Host lines for troubleshooting
+            #write-host "In scriptblock" -ForegroundColor cyan
+            #write-Host "Getting WMI VM object for $($using:vname)" -ForegroundColor green
+            try {
+                $data = Get-WmiObject -Namespace root/virtualization/v2 -Class msvm_VirtualSystemSettingData -filter "ElementName='$using:VName'" -ErrorAction stop
+                if (-Not $data.ElementName) {
+                    Throw "Item not found"
+                }
+            }
+            catch {
+                Write-Warning "Failed to get VirtualSystemSettingData for $($using:vname). $($_.exception.message)."
+                #bail out
+                return
+            }
+            if ($using:action -eq 'Clear') {
+                #write-host "Clear" -ForegroundColor cyan
+                $data.Notes = ""
+            }
+            elseif ($using:action -eq 'Append') {
+                #write-host "append" -ForegroundColor cyan
+                if (([regex]"\w+").ismatch($data.notes)) {
+                    #get the existing array
+                    #write-host "Using existing array" -ForegroundColor cyan
+                    $vmnotes = $data.notes.trim() -as [array]
+                }
+                else {
+                    #initialze a new one
+                    #write-host "Initializing a new one" -ForegroundColor cyan
+                    $vmnotes = @()
+                }
+
+                $vmnotes += $using:Notes
+                $data.Notes = $vmNotes | Out-String
+            }
+            else {
+                #write-host "create" -ForegroundColor Cyan
+                $data.Notes = $using:Notes | Out-String
+            }
+
+            #Write-Host "Apply changes" -ForegroundColor cyan
+            $text = $data.GetText("CimDtd20")
+            $vmms = Get-WmiObject -Namespace root/virtualization/v2 -Classname msvm_virtualsystemmanagementservice
+            $vmms.ModifySystemSettings($text)
+        } #close scriptblock
+
+        #define parameters to splat to Invoke-Command
+        $runParams = @{
+            ErrorAction = "Stop"
+            Session     = $null
+            Scriptblock = $sb
+        }
+    } #begin
+
+    Process {
+
+        Write-Verbose "[$((Get-Date).TimeofDay) PROCESS] Using parameter set $($pscmdlet.ParameterSetName)"
+        if (-Not $PSSess) {
+            #create a PSSession to the remote computer if it doesn't already exist
+            #it is assumed all VMs are on the same Hyper-V host
+            if ($pscmdlet.ParameterSetName -eq "name") {
+                $vmhost = $Computername
+            }
+            else {
+                $vmhost = $VM[0].computername
+            }
+            $newps = @{
+                ErrorAction  = "Stop"
+                Computername = $vmHost
+            }
+            if ($credential) {
+                $newps.Add("Credential", $Credential)
+            }
+            Try {
+                if ($pscmdlet.ShouldProcess($vmhost, "Create PSSession")) {
+                    $pssess = New-PSSession @newps
+                }
+            }
+            Catch {
+                Throw $_
+            }
+            $runParams.session = $PSSess
+        }
+
+        #define a collection of objects to process based on the detected parameter set
+        if ($PSCmdlet.ParameterSetName -eq "VMObject") {
+            $collection = $VM
+        }
+        else {
+            $collection = $Name
+        }
+        #loop through each item in the collection which will be either a VM object or the name of a VM
+        foreach ($item in $collection) {
+            if ($item.name) {
+                $vname = $item.name
+            }
+            else {
+                $vname = $item
+            }
+
+            if ($pscmdlet.shouldprocess($vname, "$Action note(s)")) {
+                #write-verbose ($runParams | Out-string)
+                $r = Invoke-Command @runParams
+                if ($r -AND $r.returnValue -ne 0) {
+                    Write-Warning "Setting the note for $vmname on $($pssess.computername) failed. Return value is $($r.returnvalue)."
+                }
+                if ($passthru) {
+                    Invoke-Command {Get-VM $using:vname} -session $pssess
+                }
+            }
+        } #foreach vmobject
+
+    } #process
+
+    End {
+        if ($PSSess) {
+            Write-Verbose "[$((Get-Date).TimeofDay) END    ] Removing PSSession"
+            Remove-PSSession -session $PSsess
+        }
+        Write-Verbose "[$((Get-Date).TimeofDay) END    ] Ending $($myinvocation.mycommand)"
+    } #end
+
+} #close Set-VMNote
 Function Expand-VMGroup {
     [cmdletbinding()]
-    [outputtype("myGroupVM","String")]
+    [outputtype("myGroupVM", "String")]
 
     Param(
         [Parameter(Position = 0, ValueFromPipeline)]
@@ -178,7 +363,7 @@ Function Stop-VMGroup {
         Write-Verbose "[$((Get-Date).TimeofDay) PROCESS] Getting VMGroup $Name on $Computername"
 
         #remove these from psboundparameters
-        "force", "save", "asjob","turnoff", "passthru", "whatif", "confirm" | foreach-object {
+        "force", "save", "asjob", "turnoff", "passthru", "whatif", "confirm" | ForEach-Object {
             if ($PSBoundParameters.ContainsKey($_)) {
                 Write-Verbose "[$((Get-Date).TimeofDay) PROCESS] removing boundparameter $_"
                 [void]$PSBoundParameters.remove($_)
@@ -520,7 +705,7 @@ Function Get-VMState {
                 $PSBoundParameters['OutBuffer'] = 1
             }
             $wrappedCmd = $ExecutionContext.InvokeCommand.GetCommand('Hyper-V\Get-VM', [System.Management.Automation.CommandTypes]::Cmdlet)
-            $PSBoundParameters.Remove('State') | Out-Null
+            [void]$PSBoundParameters.Remove('State')
             $scriptCmd = {& $wrappedCmd @PSBoundParameters | Where-Object state -eq $state }
             $steppablePipeline = $scriptCmd.GetSteppablePipeline($myInvocation.CommandOrigin)
             $steppablePipeline.Begin($PSCmdlet)
@@ -642,7 +827,7 @@ Function Get-VMMemorySummary {
 
 Function Get-VMLastUse {
 
-<#
+    <#
 .Synopsis
 Find a virtual machine last use date.
 .Description
@@ -727,134 +912,134 @@ Get-VM
 Get-Item
 #>
 
-[cmdletbinding()]
-Param (
-[Parameter(Position=0,
-HelpMessage="Enter a Hyper-V virtual machine name",
-ValueFromPipeline,ValueFromPipelinebyPropertyName)]
-[ValidateNotNullorEmpty()]
-[alias("vm")]
-[object]$Name="*",
-[Parameter(ValueFromPipelinebyPropertyname)]
-[alias("cn")]
-[string]$Computername
-)
+    [cmdletbinding()]
+    Param (
+        [Parameter(Position = 0,
+            HelpMessage = "Enter a Hyper-V virtual machine name",
+            ValueFromPipeline, ValueFromPipelinebyPropertyName)]
+        [ValidateNotNullorEmpty()]
+        [alias("vm")]
+        [object]$Name = "*",
+        [Parameter(ValueFromPipelinebyPropertyname)]
+        [alias("cn")]
+        [string]$Computername
+    )
 
-Begin {
-    Write-Verbose -Message "Starting $($MyInvocation.Mycommand)"
+    Begin {
+        Write-Verbose -Message "Starting $($MyInvocation.Mycommand)"
 
-    #define a hashtable of parameters to splat to Get-VM
-    $vmParams = @{
-      ErrorAction="Stop"
-    }
-    #if computername is not the local host add it to the parameter set
-    if ($Computername -AND ($Computername -ne $env:COMPUTERNAME)) {
-        Write-Verbose "Searching on $computername"
-        $vmParams.Add("Computername",$Computername)
-        #create a PSSession for Invoke-Command
-        Try {
-            Write-Verbose "Creating temporary PSSession"
-            $tmpSession = New-PSSession -ComputerName $Computername -ErrorAction Stop
+        #define a hashtable of parameters to splat to Get-VM
+        $vmParams = @{
+            ErrorAction = "Stop"
         }
-        Catch {
-            Throw "Failed to create temporary PSSession to $computername."
+        #if computername is not the local host add it to the parameter set
+        if ($Computername -AND ($Computername -ne $env:COMPUTERNAME)) {
+            Write-Verbose "Searching on $computername"
+            $vmParams.Add("Computername", $Computername)
+            #create a PSSession for Invoke-Command
+            Try {
+                Write-Verbose "Creating temporary PSSession"
+                $tmpSession = New-PSSession -ComputerName $Computername -ErrorAction Stop
+            }
+            Catch {
+                Throw "Failed to create temporary PSSession to $computername."
+            }
         }
-    }
-} #begin
+    } #begin
 
-Process {
-    if ($name -is [string]) {
-        Write-Verbose -Message "Getting virtual machine(s)"
-        $vmParams.Add("Name",$name)
-        Try {
-            $vms = Get-VM @vmParams
+    Process {
+        if ($name -is [string]) {
+            Write-Verbose -Message "Getting virtual machine(s)"
+            $vmParams.Add("Name", $name)
+            Try {
+                $vms = Get-VM @vmParams
+            }
+            Catch {
+                Write-Warning "Failed to find a VM or VMs with a name like $name"
+                #bail out
+                Return
+            }
         }
-        Catch {
-            Write-Warning "Failed to find a VM or VMs with a name like $name"
+        elseif ($name -is [Microsoft.HyperV.PowerShell.VirtualMachine] ) {
+            #otherwise we'll assume $Name is a virtual machine object
+            Write-Verbose "Found one or more virtual machines matching the name"
+            $vms = $name
+        }
+        else {
+            #invalid object type
+            Write-Error "The input object was invalid."
             #bail out
-            Return
+            return
         }
-    }
-    elseif ($name -is [Microsoft.HyperV.PowerShell.VirtualMachine] ) {
-        #otherwise we'll assume $Name is a virtual machine object
-        Write-Verbose "Found one or more virtual machines matching the name"
-        $vms = $name
-    }
-    else {
-        #invalid object type
-        Write-Error "The input object was invalid."
-        #bail out
-        return
-    }
-    foreach ($vm in $vms) {
+        foreach ($vm in $vms) {
 
-      #if VM is on a remote machine using PowerShell remoting to get the information
-      Write-Verbose "Processing $($vm.name)"
-      $sb = {
-      param([string]$Path,[string]$vmname)
-      Try {
-          $diskfile = Get-Item -Path $Path -ErrorAction Stop
-          $diskFile | Select-Object @{Name="LastUse";Expression={$diskFile.LastWriteTime}},
-          @{Name="LastUseAge";Expression={(Get-Date) - $diskFile.LastWriteTime}}
-      }
-      Catch {
-        Write-Warning "$($vmname): Could not find $path."
-       }
-      } #end scriptblock
+            #if VM is on a remote machine using PowerShell remoting to get the information
+            Write-Verbose "Processing $($vm.name)"
+            $sb = {
+                param([string]$Path, [string]$vmname)
+                Try {
+                    $diskfile = Get-Item -Path $Path -ErrorAction Stop
+                    $diskFile | Select-Object @{Name = "LastUse"; Expression = {$diskFile.LastWriteTime}},
+                    @{Name = "LastUseAge"; Expression = {(Get-Date) - $diskFile.LastWriteTime}}
+                }
+                Catch {
+                    Write-Warning "$($vmname): Could not find $path."
+                }
+            } #end scriptblock
 
-      #get first drive file
-      $diskpath= $vm.HardDrives[0].Path
+            #get first drive file
+            $diskpath = $vm.HardDrives[0].Path
 
-      #only proceed if a hard drive path was found
-      if ($diskpath) {
-      $icmParam=@{
-       ScriptBlock=$sb
-       ArgumentList= @($diskpath,$vm.name)
-      }
-       Write-Verbose "Getting details for $(($icmParam.ArgumentList)[0])"
-      if ($vmParams.computername) {
-        $icmParam.Add("Session",$tmpSession)
-      }
+            #only proceed if a hard drive path was found
+            if ($diskpath) {
+                $icmParam = @{
+                    ScriptBlock  = $sb
+                    ArgumentList = @($diskpath, $vm.name)
+                }
+                Write-Verbose "Getting details for $(($icmParam.ArgumentList)[0])"
+                if ($vmParams.computername) {
+                    $icmParam.Add("Session", $tmpSession)
+                }
 
-      $details = Invoke-Command @icmParam
-      #write a custom object to the pipeline
-      $objHash=[ordered]@{
-        VMName=$vm.name
-        CreationTime=$vm.CreationTime
-        LastUse=$details.LastUse
-        LastUseAge=$details.LastUseAge
-      }
+                $details = Invoke-Command @icmParam
+                #write a custom object to the pipeline
+                $objHash = [ordered]@{
+                    VMName       = $vm.name
+                    CreationTime = $vm.CreationTime
+                    LastUse      = $details.LastUse
+                    LastUseAge   = $details.LastUseAge
+                }
 
-      #if VM is running set the LastUseAge to 0:00:00
-      if ($vm.state -eq 'running') {
-         $objHash.LastUseAge= New-TimeSpan -hours 0
-      }
+                #if VM is running set the LastUseAge to 0:00:00
+                if ($vm.state -eq 'running') {
+                    $objHash.LastUseAge = New-TimeSpan -hours 0
+                }
 
-      #write the object to the pipeline
-      New-Object -TypeName PSObject -Property $objHash
+                #write the object to the pipeline
+                New-Object -TypeName PSObject -Property $objHash
 
-      } #if $diskpath
-      Else {
-            Write-Warning "$($vm.name): No hard drives defined."
-      }
-     }#foreach
-} #process
+            } #if $diskpath
+            Else {
+                Write-Warning "$($vm.name): No hard drives defined."
+            }
+        }#foreach
+    } #process
 
-End {
-    #remove temp PSSession if found
-    if ($tmpSession) {
-        Write-Verbose "Removing temporary PSSession"
-        $tmpSession | Remove-PSSession
-    }
+    End {
+        #remove temp PSSession if found
+        if ($tmpSession) {
+            Write-Verbose "Removing temporary PSSession"
+            $tmpSession | Remove-PSSession
+        }
 
-    Write-Verbose -Message "Ending $($MyInvocation.Mycommand)"
-} #end
+        Write-Verbose -Message "Ending $($MyInvocation.Mycommand)"
+    } #end
 
 } #end function
 
 Function New-HyperVHealthReport {
 
-<#
+    <#
 .Synopsis
 Create an HTML Hyper-V health report.
 .Description
@@ -924,488 +1109,492 @@ Version 0.9.5
 ****************************************************************
 #>
 
-[cmdletbinding()]
+    [cmdletbinding()]
 
-Param(
-[Parameter(Position=0,HelpMessage="The name of the Hyper-V server. You must have rights to administer the server.")]
-[ValidateNotNullorEmpty()]
-[String]$Computername=$env:computername,
-[Parameter(HelpMessage="The path and filename for the HTML report.")]
-[ValidateNotNullorEmpty()]
-[ValidateScript({
-if (Test-Path (Split-Path $_)) {
- $True
- }
- else {
-  Throw "Can't validate part of the path $_"
- }
-})]
-[String]$Path= (
-Join-path -path ([environment]::GetFolderPath("mydocuments")) -child "HyperV-Health.htm"
-),
-[Parameter(HelpMessage="The number of days to check for recently created virtual machines.")]
-[ValidateScript({$_ -ge 0})]
-[int]$RecentCreated=30,
-[Parameter(HelpMessage="The number of days to check for last used virtual machines.")]
-[ValidateScript({$_ -ge 0})]
-[int]$LastUsed=30,
-[Parameter(HelpMessage="The number of hours to check for recent event log entries.")]
-[ValidateScript({$_ -ge 0})]
-[int]$Hours=24,
-[Parameter(HelpMessage="Specify if you do want performance counters in the report.")]
-[switch]$Performance,
-[Parameter(HelpMessage="Specify if you do want resource metering in the report.")]
-[switch]$Metering
+    Param(
+        [Parameter(Position = 0, HelpMessage = "The name of the Hyper-V server. You must have rights to administer the server.")]
+        [ValidateNotNullorEmpty()]
+        [String]$Computername = $env:computername,
+        [Parameter(HelpMessage = "The path and filename for the HTML report.")]
+        [ValidateNotNullorEmpty()]
+        [ValidateScript( {
+                if (Test-Path (Split-Path $_)) {
+                    $True
+                }
+                else {
+                    Throw "Can't validate part of the path $_"
+                }
+            })]
+        [String]$Path = (
+            Join-path -path ([environment]::GetFolderPath("mydocuments")) -child "HyperV-Health.htm"
+        ),
+        [Parameter(HelpMessage = "The number of days to check for recently created virtual machines.")]
+        [ValidateScript( {$_ -ge 0})]
+        [int]$RecentCreated = 30,
+        [Parameter(HelpMessage = "The number of days to check for last used virtual machines.")]
+        [ValidateScript( {$_ -ge 0})]
+        [int]$LastUsed = 30,
+        [Parameter(HelpMessage = "The number of hours to check for recent event log entries.")]
+        [ValidateScript( {$_ -ge 0})]
+        [int]$Hours = 24,
+        [Parameter(HelpMessage = "Specify if you do want performance counters in the report.")]
+        [switch]$Performance,
+        [Parameter(HelpMessage = "Specify if you do want resource metering in the report.")]
+        [switch]$Metering
 
-)
+    )
 
-#region initialize
-$reportversion="0.9.5"
+    #region initialize
+    $reportversion = "0.9.5"
 
-Import-Module Hyper-V,Storage,NetAdapter
+    Import-Module Hyper-V, Storage, NetAdapter
 
-#parameters for Write-Progress
-$progParam=@{
-Activity="Hyper-V Health Report: $($computername.ToUpper())"
-Status="initializing"
-PercentComplete=0
-}
+    #parameters for Write-Progress
+    $progParam = @{
+        Activity        = "Hyper-V Health Report: $($computername.ToUpper())"
+        Status          = "initializing"
+        PercentComplete = 0
+    }
 
-Write-Progress @progParam
+    Write-Progress @progParam
 
-#initialize a variable for HTML fragments
-$fragments=@()
-$fragments+="<a href='javascript:toggleAll();' title='Click to toggle all sections'>+/-</a>"
+    #initialize a variable for HTML fragments
+    $fragments = @()
+    $fragments += "<a href='javascript:toggleAll();' title='Click to toggle all sections'>+/-</a>"
 
-#endregion
+    #endregion
 
-#region get server information
+    #region get server information
 
-$progParam.Status="Getting VM Host"
-$progParam.currentOperation=$computername
-Write-Progress @progParam
+    $progParam.Status = "Getting VM Host"
+    $progParam.currentOperation = $computername
+    Write-Progress @progParam
 
-$vmhost = Get-VMHost -ComputerName $computername |
-Select @{Name="Name";Expression={$_.name.toUpper()}},
-@{Name="Domain";Expression={$_.FullyQualifiedDomainName}},
-@{Name="MemGB";Expression={$_.MemoryCapacity/1GB -as [int]}},
-@{Name="Max Migrations";Expression={$_.MaximumStorageMigrations}},
-@{Name="Numa Spanning";Expression={$_.NumaSpanningEnabled}},
-@{Name="IoV";Expression={$_.IoVSupport}},
-@{Name="VHD Path";Expression={$_.VirtualHardDiskPath}},
-@{Name="VM Path";Expression={$_.VirtualMachinePath}}
+    $vmhost = Get-VMHost -ComputerName $computername |
+        Select-Object @{Name = "Name"; Expression = {$_.name.toUpper()}},
+    @{Name = "Domain"; Expression = {$_.FullyQualifiedDomainName}},
+    @{Name = "MemGB"; Expression = {$_.MemoryCapacity / 1GB -as [int]}},
+    @{Name = "Max Migrations"; Expression = {$_.MaximumStorageMigrations}},
+    @{Name = "Numa Spanning"; Expression = {$_.NumaSpanningEnabled}},
+    @{Name = "IoV"; Expression = {$_.IoVSupport}},
+    @{Name = "VHD Path"; Expression = {$_.VirtualHardDiskPath}},
+    @{Name = "VM Path"; Expression = {$_.VirtualMachinePath}}
 
-$Text="VM Host"
-$div=$Text.Replace(" ","_")
-$fragments+= "<a href='javascript:toggleDiv(""$div"");' title='click to collapse or expand this section'><h2>$Text</h2></a><div id=""$div"">"
-$fragments+= $vmhost | ConvertTo-Html -Fragment
-$fragments+="</div>"
+    $Text = "VM Host"
+    $div = $Text.Replace(" ", "_")
+    $fragments += "<a href='javascript:toggleDiv(""$div"");' title='click to collapse or expand this section'><h2>$Text</h2></a><div id=""$div"">"
+    $fragments += $vmhost | ConvertTo-Html -Fragment
+    $fragments += "</div>"
 
-$progParam.Status="Getting Server information"
-$progParam.currentOperation="Operating System"
-Write-Progress @progParam
+    $progParam.Status = "Getting Server information"
+    $progParam.currentOperation = "Operating System"
+    Write-Progress @progParam
 
-$os = Get-CimInstance -ClassName Win32_OperatingSystem -ComputerName $computername
-$osdetail = $os |
-Select @{Name="OS";Expression={$_.caption}},
-@{Name="ServicePack";Expression={$_.CSDVersion}},
-LastBootUptime,
-@{Name="Uptime";Expression={(Get-Date) - $_.LastBootUpTime}}
+    $os = Get-CimInstance -ClassName Win32_OperatingSystem -ComputerName $computername
+    $osdetail = $os |
+        Select-Object @{Name = "OS"; Expression = {$_.caption}},
+    @{Name = "ServicePack"; Expression = {$_.CSDVersion}},
+    LastBootUptime,
+    @{Name = "Uptime"; Expression = {(Get-Date) - $_.LastBootUpTime}}
 
-$Text="Operating System"
-$div=$Text.Replace(" ","_")
-$fragments+= "<a href='javascript:toggleDiv(""$div"");' title='click to collapse or expand this section'><h2>$Text</h2></a><div id=""$div"">"
-$fragments+= $osdetail | Convertto-html -Fragment
-$fragments+="</div>"
-$progparam.PercentComplete= 5
-$progParam.currentOperation="Computer System"
-Write-Progress @progParam
+    $Text = "Operating System"
+    $div = $Text.Replace(" ", "_")
+    $fragments += "<a href='javascript:toggleDiv(""$div"");' title='click to collapse or expand this section'><h2>$Text</h2></a><div id=""$div"">"
+    $fragments += $osdetail | Convertto-html -Fragment
+    $fragments += "</div>"
+    $progparam.PercentComplete = 5
+    $progParam.currentOperation = "Computer System"
+    Write-Progress @progParam
 
-$cs = Get-CimInstance -ClassName Win32_ComputerSystem -ComputerName $computername |
-Select Manufacturer,Model,@{Name="TotalMemoryGB";Expression={[int]($_.TotalPhysicalMemory/1GB)}},
-NumberOfProcessors,NumberOfLogicalProcessors
+    $cs = Get-CimInstance -ClassName Win32_ComputerSystem -ComputerName $computername |
+        Select-Object Manufacturer, Model, @{Name = "TotalMemoryGB"; Expression = {[int]($_.TotalPhysicalMemory / 1GB)}},
+    NumberOfProcessors, NumberOfLogicalProcessors
 
-$Text="Computer System"
-$div=$Text.Replace(" ","_")
-$fragments+= "<a href='javascript:toggleDiv(""$div"");' title='click to collapse or expand this section'><h2>$Text</h2></a><div id=""$div"">"
-$fragments+= $cs | ConvertTo-HTML -Fragment
-$fragments+="</div>"
-#endregion
+    $Text = "Computer System"
+    $div = $Text.Replace(" ", "_")
+    $fragments += "<a href='javascript:toggleDiv(""$div"");' title='click to collapse or expand this section'><h2>$Text</h2></a><div id=""$div"">"
+    $fragments += $cs | ConvertTo-HTML -Fragment
+    $fragments += "</div>"
+    #endregion
 
-#region memory
+    #region memory
 
-$text="Memory"
-$fragments+= "<a href='javascript:toggleDiv(""$Text"");' title='click to collapse or expand this section'><h2>$Text</h2></a><div id=""$Text"">"
+    $text = "Memory"
+    $fragments += "<a href='javascript:toggleDiv(""$Text"");' title='click to collapse or expand this section'><h2>$Text</h2></a><div id=""$Text"">"
 
-$mem = $os |
-Select @{Name="FreeGB";Expression={[math]::Round(($_.FreePhysicalMemory/1MB),2)}},
-@{Name="TotalGB";Expression={[math]::Round(($_.TotalVisibleMemorySize/1MB),2)}},
-@{Name="Percent Free";Expression={[math]::Round(($_.FreePhysicalMemory/$_.TotalVisibleMemorySize)*100,2)}},
-@{Name="FreeVirtualGB";Expression={[math]::Round(($_.FreeVirtualMemory/1MB),2)}},
-@{Name="TotalVirtualGB";Expression={[math]::Round(($_.TotalVirtualMemorySize/1MB),2)}}
+    $mem = $os |
+        Select-Object @{Name = "FreeGB"; Expression = {[math]::Round(($_.FreePhysicalMemory / 1MB), 2)}},
+    @{Name = "TotalGB"; Expression = {[math]::Round(($_.TotalVisibleMemorySize / 1MB), 2)}},
+    @{Name = "Percent Free"; Expression = {[math]::Round(($_.FreePhysicalMemory / $_.TotalVisibleMemorySize) * 100, 2)}},
+    @{Name = "FreeVirtualGB"; Expression = {[math]::Round(($_.FreeVirtualMemory / 1MB), 2)}},
+    @{Name = "TotalVirtualGB"; Expression = {[math]::Round(($_.TotalVirtualMemorySize / 1MB), 2)}}
 
-[xml]$html = $mem | ConvertTo-Html -fragment
+    [xml]$html = $mem | ConvertTo-Html -fragment
 
-#check each row, skipping the TH header row
-for ($i=1;$i -le $html.table.tr.count-1;$i++) {
-  $class = $html.CreateAttribute("class")
-  #check the value of the percent free MB column and assign a class to the row
-  if (($html.table.tr[$i].td[2] -as [double]) -le 10) {
-    $class.value = "memalert"
-    $html.table.tr[$i].ChildNodes[2].Attributes.Append($class) | Out-Null
-  }
-  elseif (($html.table.tr[$i].td[2] -as [double]) -le 20) {
-    $class.value = "memwarn"
-    $html.table.tr[$i].ChildNodes[2].Attributes.Append($class) | Out-Null
-  }
-}
+    #check each row, skipping the TH header row
+    for ($i = 1; $i -le $html.table.tr.count - 1; $i++) {
+        $class = $html.CreateAttribute("class")
+        #check the value of the percent free MB column and assign a class to the row
+        if (($html.table.tr[$i].td[2] -as [double]) -le 10) {
+            $class.value = "memalert"
+            [void]$html.table.tr[$i].ChildNodes[2].Attributes.Append($class)
+        }
+        elseif (($html.table.tr[$i].td[2] -as [double]) -le 20) {
+            $class.value = "memwarn"
+            [void]$html.table.tr[$i].ChildNodes[2].Attributes.Append($class)
+        }
+    }
 
-$fragments+= $html.innerXML
-$fragments+="</div>"
-#endregion
+    $fragments += $html.innerXML
+    $fragments += "</div>"
+    #endregion
 
-#region network adapters
-$progParam.currentOperation="Network Adapters"
-$progparam.PercentComplete= 10
-Write-Progress @progParam
+    #region network adapters
+    $progParam.currentOperation = "Network Adapters"
+    $progparam.PercentComplete = 10
+    Write-Progress @progParam
 
-$Text="Network Adapters"
-$div=$Text.Replace(" ","_")
-$fragments+= "<a href='javascript:toggleDiv(""$div"");' title='click to collapse or expand this section'><h2>$Text</h2></a><div id=""$div"">"
+    $Text = "Network Adapters"
+    $div = $Text.Replace(" ", "_")
+    $fragments += "<a href='javascript:toggleDiv(""$div"");' title='click to collapse or expand this section'><h2>$Text</h2></a><div id=""$div"">"
 
-$fragments+= Get-NetAdapterStatistics -CimSession $computername |
-Select Name,
-@{Name="RcvdUnicastMB";Expression={[math]::Round(($_.ReceivedUnicastBytes/1MB),2)}},
-@{Name="SentUnicastMB";Expression={[math]::Round(($_.SentUnicastBytes/1MB),2)}},
-ReceivedUnicastPackets,SentUnicastPackets,
-ReceivedDiscardedPackets,OutboundDiscardedPackets | ConvertTo-HTML -Fragment
+    $fragments += Get-NetAdapterStatistics -CimSession $computername |
+        Select-Object Name,
+    @{Name = "RcvdUnicastMB"; Expression = {[math]::Round(($_.ReceivedUnicastBytes / 1MB), 2)}},
+    @{Name = "SentUnicastMB"; Expression = {[math]::Round(($_.SentUnicastBytes / 1MB), 2)}},
+    ReceivedUnicastPackets, SentUnicastPackets,
+    ReceivedDiscardedPackets, OutboundDiscardedPackets | ConvertTo-HTML -Fragment
 
-$fragments+="</div>"
-#endregion
+    $fragments += "</div>"
+    #endregion
 
-#region check disk space
+    #region check disk space
 
-$progParam.Status="Getting Server Details"
-$progParam.currentOperation="checking volumes"
-$progparam.PercentComplete= 15
-Write-Progress @progParam
+    $progParam.Status = "Getting Server Details"
+    $progParam.currentOperation = "checking volumes"
+    $progparam.PercentComplete = 15
+    Write-Progress @progParam
 
-$vols = Get-Volume -CimSession $computername |
-Where drivetype -eq 'fixed' | Sort DriveLetter |
-Select @{Name="Drive";Expression={
-if ($_.DriveLetter) { $_.driveletter} else {"none"}
-}},Path,HealthStatus,
-@{Name="SizeGB";Expression={[math]::Round(($_.Size/1gb),2)}},
-@{Name="FreeGB";Expression={[math]::Round(($_.SizeRemaining/1gb),4)}},
-@{Name="PercentFree";Expression={[math]::Round((($_.SizeRemaining/$_.Size)*100),2)}}
+    $vols = Get-Volume -CimSession $computername |
+        Where-Object drivetype -eq 'fixed' | Sort-Object DriveLetter |
+        Select-Object @{Name = "Drive"; Expression = {
+            if ($_.DriveLetter) { $_.driveletter} else {"none"}
+        }
+    }, Path, HealthStatus,
+    @{Name = "SizeGB"; Expression = {[math]::Round(($_.Size / 1gb), 2)}},
+    @{Name = "FreeGB"; Expression = {[math]::Round(($_.SizeRemaining / 1gb), 4)}},
+    @{Name = "PercentFree"; Expression = {[math]::Round((($_.SizeRemaining / $_.Size) * 100), 2)}}
 
-$Text="Volumes"
-$div=$Text.Replace(" ","_")
-$fragments+= "<a href='javascript:toggleDiv(""$div"");' title='click to collapse or expand this section'><h2>$Text</h2></a><div id=""$div"">"
+    $Text = "Volumes"
+    $div = $Text.Replace(" ", "_")
+    $fragments += "<a href='javascript:toggleDiv(""$div"");' title='click to collapse or expand this section'><h2>$Text</h2></a><div id=""$div"">"
 
-[xml]$html = $vols | ConvertTo-Html -Fragment
+    [xml]$html = $vols | ConvertTo-Html -Fragment
 
-<#
+    <#
 I don't know why, but I can't add attributes to two different nodes
 at the same time so we have to go through all the volumes once to
 look at health and then a second time to look at percent free space.
 #>
 
-#check each row, skipping the TH header row
-#add alert class if volume is not healthy
-for ($i=1;$i -le $html.table.tr.count-1;$i++) {
-  $class = $html.CreateAttribute("class")
-
-  if ($html.table.tr[$i].td[2] -ne "Healthy") {
-    $class.value = "alert"
-    $html.table.tr[$i].ChildNodes[2].Attributes.Append($class) | Out-Null
-  }
-  else {
-    $class.value = "green"
-    $html.table.tr[$i].ChildNodes[2].Attributes.Append($class) | Out-Null
-  }
-
-}
-#go through rows again and add class depending on % free space
-for ($i=1;$i -le $html.table.tr.count-1;$i++) {
-  $class = $html.CreateAttribute("class")
-
-  if (($html.table.tr[$i].td[-1] -as [double]) -le 10) {
-    $class.value = "memalert"
-    $html.table.tr[$i].ChildNodes[5].Attributes.Append($class) | Out-Null
-  }
-  elseif (($html.table.tr[$i].td[-1] -as [double]) -le 20) {
-    $class.value = "memwarn"
-    $html.table.tr[$i].ChildNodes[5].Attributes.Append($class) | Out-Null
-  }
-} #for
-
-$fragments+= $html.innerXML
-$fragments+="</div>"
-#endregion
-
-#region check services
-
-$progParam.currentOperation="Checking Hyper-V Services"
-$progparam.PercentComplete= 20
-Write-Progress @progParam
-
-$services = Get-CimInstance win32_service -filter "name like 'vmi%' or name ='vmms'" -ComputerName $computername |
-Select Name,Displayname,StartMode,State,Startname
-
-$Text="Services"
-$div=$Text.Replace(" ","_")
-$fragments+= "<a href='javascript:toggleDiv(""$div"");' title='click to collapse or expand this section'><h2>$Text</h2></a><div id=""$div"">"
-
-[xml]$html= $services | ConvertTo-HTML -Fragment
-#find stopped services and add Alert style
-for ($i=1;$i -le $html.table.tr.count-1;$i++) {
-  $class = $html.CreateAttribute("class")
-  #check the value of the State column and assign a class to the row
-  if ($html.table.tr[$i].td[3] -eq 'running') {
-    $class.value = "green"
-    $html.table.tr[$i].Attributes.Append($class) | Out-Null
-  }
-}
-#add the revised html to the fragment
-$fragments+= $html.InnerXml
-$fragments+="</div>"
-
-#endregion
-
-#region enum VM
-$progParam.Status="Getting Virtual Machine information"
-$progParam.currentOperation="Enumerating VMs"
-$progparam.PercentComplete= 25
-Write-Progress @progParam
-
-$Text="Virtual Machines"
-$div=$Text.Replace(" ","_")
-$fragments+= "<a href='javascript:toggleDiv(""$div"");' title='click to collapse or expand this section'><h2>$Text</h2></a><div id=""$div"">"
-Try {
-    #get all VMs that are not turned off
-    $allVMs = Get-VM -ComputerName $computername -ErrorAction Stop
-    $runningVMs= $allVMS | Where State -ne 'off'
-    $vmGroup = $runningVMs | sort State,Name | Group-Object -Property State | Sort Count
-
-    #define a set of properties to display for each VM
-    $vmProps="Name","Uptime","Status","CPUUsage","MemoryAssigned",
-    "MemoryDemand","MemoryStatus","MemoryStartup","MemoryMiniumum",
-    "MemoryMaximum","DynamicMemoryEnabled"
-
-    foreach ($item in $vmGroup) {
-
-     [xml]$html= $item.Group | Select $vmProps | ConvertTo-HTML -Fragment
-
-      $caption = $html.CreateElement("caption")
-      $html.table.AppendChild($caption) | Out-Null
-      $html.table.caption= $item.Name
-
-      for ($i=1;$i -le $html.table.tr.count-1;$i++) {
+    #check each row, skipping the TH header row
+    #add alert class if volume is not healthy
+    for ($i = 1; $i -le $html.table.tr.count - 1; $i++) {
         $class = $html.CreateAttribute("class")
-        #check the value of the MemoryStatus column and assign a class to the row
-        if ($html.table.tr[$i].td[6] -eq "Low") {
-        $class.value = "memalert"
-        $html.table.tr[$i].ChildNodes[6].Attributes.Append($class) | Out-Null
+
+        if ($html.table.tr[$i].td[2] -ne "Healthy") {
+            $class.value = "alert"
+            [void]$html.table.tr[$i].ChildNodes[2].Attributes.Append($class)
         }
-        elseif ($html.table.tr[$i].td[6] -eq "Warning") {
-         $class.value = "memwarn"
-         $html.table.tr[$i].ChildNodes[6].Attributes.Append($class) | Out-Null
+        else {
+            $class.value = "green"
+            [void]$html.table.tr[$i].ChildNodes[2].Attributes.Append($class)
         }
 
-     } #for
-
-      $fragments+= $html.InnerXml
-    } #foreach
-  } #try
-Catch {
-    $fragments+="<p style='color:red;'>No virtual machines detected</p>"
-}
-
-#region created in the last 30 days
-$progParam.currentOperation="Virtual Machines Created in last $RecentCreated Days"
-$progparam.PercentComplete= 28
-Write-Progress @progParam
-
-if ($allVMs) {
-  $recent = $allVMS | where CreationTime -ge (Get-Date).AddDays(-$RecentCreated) |
-  Select Name,CreationTime,Notes
-  if ($recent) {
-    [xml]$html= $recent | ConvertTo-HTML -Fragment
-      $caption = $html.CreateElement("caption")
-      $html.table.AppendChild($caption) | Out-Null
-      $html.table.caption= "Created in last $RecentCreated days"
-      $fragments+= $html.InnerXml
-  }
-  else {
-    $fragments+="<table><caption>Created in last $RecentCreated days</caption><tr><td style='color:green'>No virtual machines created recently</td></tr></table>"
-  }
-}
-else {
-    $fragments+="<p style='color:red;'>No virtual machines detected</p>"
-}
-
-#endregion
-
-#region last use
-$progParam.currentOperation="Virtual Machines not used within last $LastUsed Days"
-$progparam.PercentComplete= 30
-Write-Progress @progParam
-$last= New-Timespan -Days $LastUsed
-$data = Get-VMLastUse -Computername $Computername | where {$_.lastuseage -gt $last } | sort LastUseAge
-
-if ($data) {
- [xml]$html= $data | ConvertTo-HTML -Fragment
-      $caption = $html.CreateElement("caption")
-      $html.table.AppendChild($caption) | Out-Null
-      $html.table.caption= "Not used in last $lastused days"
-      $fragments+= $html.InnerXml
-
-}
-else {
- $fragments+="<table><caption>Not used in last $lastused days</caption><tr><td style='color:green'>No unused virtual machines detected for the last $lastused days.</td></tr></table>"
-}
-#endregion
-
-#region Integrated Services Version
-$progParam.currentOperation="Integrated Services Version"
-$progparam.PercentComplete= 35
-Write-Progress @progParam
-
-if ($runningVMs) {
-  $isv = $runningVMS | Sort IntegrationServicesVersion | Select Name,IntegrationServicesVersion
-
-  [xml]$html= $isv | ConvertTo-HTML -Fragment
-   $caption = $html.CreateElement("caption")
-   $html.table.AppendChild($caption) | Out-Null
-   $html.table.caption= "Integration Services Version"
-   $fragments+=$html.InnerXml
-}
-else {
-     $fragments+="<p style='color:red;'>No virtual machines detected</p>"
-}
-#endregion
-
-#endregion
-
-#region VHD Utilization
-$progParam.currentOperation="Analyzing Virtual Disks"
-$progparam.PercentComplete= 40
-Write-Progress @progParam
-
-$fragments+= "<h3>Virtual Disk Detail</h3>"
-
-if ($runningVMs) {
-    $progParam.Status="Getting Virtual Disk Detail"
-    foreach ($vm in $runningVMs) {
-        $progParam.currentOperation=$vm.name
-        Write-Progress @progParam
-        #get VHD details
-        $vhdDetail = foreach ($drive in $vm.harddrives) {
-        Try {
-        $detail = Get-VHD -ComputerName $computername -path $drive.path -ErrorAction Stop
-        $vhdHash=[ordered]@{
-          ControllerType= $drive.ControllerType
-          ControllerNumber= $drive.ControllerNumber
-          ControllerLocation= $drive.ControllerLocation
-          VHDFormat= $detail.VHDFormat
-          VHDType= $detail.VHDType
-          FileSizeMB= [math]::Round(($detail.FileSize/1MB),2)
-          SizeMB= [math]::Round(($detail.Size/1MB),2)
-          MinSizeMB= [math]::Round(($detail.MinimumSize/1MB),2)
-          FragPercent= $detail.FragmentationPercentage
-          Path= $drive.path
-        }
-          New-Object -TypeName PSObject -Property $vhdhash
-        } #try
-        Catch {
-            $fragments+="<p style='color:red'>$($_.Exception.Message)</p>"
-        }
-    } #foreach drive
-     if ($vhdDetail) {
-        [xml]$html= $vhdDetail | ConvertTo-HTML -Fragment
-        $caption = $html.CreateElement("caption")
-          $html.table.AppendChild($caption) | Out-Null
-          $html.table.caption= $vm.Name
-          $fragments+= $html.InnerXml
     }
- } #foreach vm
-}
-else {
- $fragments+="<p style='color:red;'>No virtual disk files found</p>"
-}
+    #go through rows again and add class depending on % free space
+    for ($i = 1; $i -le $html.table.tr.count - 1; $i++) {
+        $class = $html.CreateAttribute("class")
 
-#endregion
+        if (($html.table.tr[$i].td[-1] -as [double]) -le 10) {
+            $class.value = "memalert"
+            [void]$html.table.tr[$i].ChildNodes[5].Attributes.Append($class)
+        }
+        elseif (($html.table.tr[$i].td[-1] -as [double]) -le 20) {
+            $class.value = "memwarn"
+            [void]$html.table.tr[$i].ChildNodes[5].Attributes.Append($class)
+        }
+    } #for
 
-#region Resource Metering
-if ($Metering) {
-$progParam.currentOperation="Gathering Resource Metering Data"
-$progparam.PercentComplete= 43
-Write-Progress @progParam
+    $fragments += $html.innerXML
+    $fragments += "</div>"
+    #endregion
 
-#region Resource Pool
-$fragments+= "<h3>Resource Pool Metering</h3>"
-#turn off error handling. There might be some resource pool data for some
-#types
-$data = Measure-VMResourcePool -name * -computer $computername -ErrorAction SilentlyContinue |
-Select ResourcePoolname,AvgCPU,AvgRam,MinRam,MaxRam,TotalDisk,
- @{Name="NetworkInbound(M)";
- Expression= { ($_.NetworkMeteredTrafficReport |
- where direction -Eq 'inbound' | measure TotalTraffic -sum).Sum
- }},MeteringDuration
+    #region check services
 
-if ($data) {
-$fragments+= $data | ConvertTo-Html -Fragment
-}
-else {
-$fragments+="<p style='color:red;'>No VM Resource Pool data found</p>"
-}
-#endregion
+    $progParam.currentOperation = "Checking Hyper-V Services"
+    $progparam.PercentComplete = 20
+    Write-Progress @progParam
 
-#region VM metering
+    $services = Get-CimInstance win32_service -filter "name like 'vmi%' or name ='vmms'" -ComputerName $computername |
+        Select-Object Name, Displayname, StartMode, State, Startname
 
-$fragments+= "<h3>VM Resource Metering</h3>"
+    $Text = "Services"
+    $div = $Text.Replace(" ", "_")
+    $fragments += "<a href='javascript:toggleDiv(""$div"");' title='click to collapse or expand this section'><h2>$Text</h2></a><div id=""$div"">"
 
-if ($runningVMs) {
- $data = $runningVMs | where {$_.ResourceMeteringEnabled} |
- foreach {
-     Measure-VM -name $_.vmname -ComputerName $computername |
-     Select VMName,AvgCPU,AvgRAM,MinRam,MaxRam,TotalDisk,
-     @{Name="NetworkInbound(M)";
-     Expression= { ($_.NetworkMeteredTrafficReport |
-     where direction -Eq 'inbound' | measure TotalTraffic -sum).Sum
-     }},
-     @{Name="NetworkOutbound(M)";
-     Expression= { ($_.NetworkMeteredTrafficReport |
-     where direction -Eq 'outbound' | measure TotalTraffic -sum).Sum
-     }}, MeteringDuration
- } #foreach
- $fragments+= $data | ConvertTo-Html -Fragment
-}
-else {
-    $fragments+="<p style='color:red;'>No virtual machines detected</p>"
-}
+    [xml]$html = $services | ConvertTo-HTML -Fragment
+    #find stopped services and add Alert style
+    for ($i = 1; $i -le $html.table.tr.count - 1; $i++) {
+        $class = $html.CreateAttribute("class")
+        #check the value of the State column and assign a class to the row
+        if ($html.table.tr[$i].td[3] -eq 'running') {
+            $class.value = "green"
+            [void]$html.table.tr[$i].Attributes.Append($class)
+        }
+    }
+    #add the revised html to the fragment
+    $fragments += $html.InnerXml
+    $fragments += "</div>"
 
-#endregion
-}
-$fragments+="</div>"
-#endregion
+    #endregion
 
-#region check for recent event log errors and warnings
+    #region enum VM
+    $progParam.Status = "Getting Virtual Machine information"
+    $progParam.currentOperation = "Enumerating VMs"
+    $progparam.PercentComplete = 25
+    Write-Progress @progParam
 
-$progParam.currentOperation="Checking System Event Log"
-$progparam.PercentComplete= 60
-Write-Progress @progParam
+    $Text = "Virtual Machines"
+    $div = $Text.Replace(" ", "_")
+    $fragments += "<a href='javascript:toggleDiv(""$div"");' title='click to collapse or expand this section'><h2>$Text</h2></a><div id=""$div"">"
+    Try {
+        #get all VMs that are not turned off
+        $allVMs = Get-VM -ComputerName $computername -ErrorAction Stop
+        $runningVMs = $allVMS | Where-Object State -ne 'off'
+        $vmGroup = $runningVMs | Sort-Object State, Name | Group-Object -Property State | Sort-Object Count
 
-#hashtable of parameters for Get-Eventlog
-$logParam=@{
-Computername= $Computername
-LogName= "System"
-EntryType= "Error","Warning"
-After= (Get-Date).AddHours(-$Hours)
-}
-$sysLog = Get-EventLog @logparam
-<#
+        #define a set of properties to display for each VM
+        $vmProps = "Name", "Uptime", "Status", "CPUUsage", "MemoryAssigned",
+        "MemoryDemand", "MemoryStatus", "MemoryStartup", "MemoryMiniumum",
+        "MemoryMaximum", "DynamicMemoryEnabled"
+
+        foreach ($item in $vmGroup) {
+
+            [xml]$html = $item.Group | Select-Object $vmProps | ConvertTo-HTML -Fragment
+
+            $caption = $html.CreateElement("caption")
+            [void]$html.table.AppendChild($caption)
+            $html.table.caption = $item.Name
+
+            for ($i = 1; $i -le $html.table.tr.count - 1; $i++) {
+                $class = $html.CreateAttribute("class")
+                #check the value of the MemoryStatus column and assign a class to the row
+                if ($html.table.tr[$i].td[6] -eq "Low") {
+                    $class.value = "memalert"
+                    [void]$html.table.tr[$i].ChildNodes[6].Attributes.Append($class)
+                }
+                elseif ($html.table.tr[$i].td[6] -eq "Warning") {
+                    $class.value = "memwarn"
+                    [void]$html.table.tr[$i].ChildNodes[6].Attributes.Append($class)
+                }
+
+            } #for
+
+            $fragments += $html.InnerXml
+        } #foreach
+    } #try
+    Catch {
+        $fragments += "<p style='color:red;'>No virtual machines detected</p>"
+    }
+
+    #region created in the last 30 days
+    $progParam.currentOperation = "Virtual Machines Created in last $RecentCreated Days"
+    $progparam.PercentComplete = 28
+    Write-Progress @progParam
+
+    if ($allVMs) {
+        $recent = $allVMS | Where-Object CreationTime -ge (Get-Date).AddDays(-$RecentCreated) |
+            Select-Object Name, CreationTime, Notes
+        if ($recent) {
+            [xml]$html = $recent | ConvertTo-HTML -Fragment
+            $caption = $html.CreateElement("caption")
+            [void]$html.table.AppendChild($caption)
+            $html.table.caption = "Created in last $RecentCreated days"
+            $fragments += $html.InnerXml
+        }
+        else {
+            $fragments += "<table><caption>Created in last $RecentCreated days</caption><tr><td style='color:green'>No virtual machines created recently</td></tr></table>"
+        }
+    }
+    else {
+        $fragments += "<p style='color:red;'>No virtual machines detected</p>"
+    }
+
+    #endregion
+
+    #region last use
+    $progParam.currentOperation = "Virtual Machines not used within last $LastUsed Days"
+    $progparam.PercentComplete = 30
+    Write-Progress @progParam
+    $last = New-Timespan -Days $LastUsed
+    $data = Get-VMLastUse -Computername $Computername | Where-Object {$_.lastuseage -gt $last } | Sort-Object LastUseAge
+
+    if ($data) {
+        [xml]$html = $data | ConvertTo-HTML -Fragment
+        $caption = $html.CreateElement("caption")
+        [void]$html.table.AppendChild($caption)
+        $html.table.caption = "Not used in last $lastused days"
+        $fragments += $html.InnerXml
+
+    }
+    else {
+        $fragments += "<table><caption>Not used in last $lastused days</caption><tr><td style='color:green'>No unused virtual machines detected for the last $lastused days.</td></tr></table>"
+    }
+    #endregion
+
+    #region Integrated Services Version
+    $progParam.currentOperation = "Integrated Services Version"
+    $progparam.PercentComplete = 35
+    Write-Progress @progParam
+
+    if ($runningVMs) {
+        $isv = $runningVMS | Sort-Object IntegrationServicesVersion | Select-Object Name, IntegrationServicesVersion
+
+        [xml]$html = $isv | ConvertTo-HTML -Fragment
+        $caption = $html.CreateElement("caption")
+        [void]$html.table.AppendChild($caption)
+        $html.table.caption = "Integration Services Version"
+        $fragments += $html.InnerXml
+    }
+    else {
+        $fragments += "<p style='color:red;'>No virtual machines detected</p>"
+    }
+    #endregion
+
+    #endregion
+
+    #region VHD Utilization
+    $progParam.currentOperation = "Analyzing Virtual Disks"
+    $progparam.PercentComplete = 40
+    Write-Progress @progParam
+
+    $fragments += "<h3>Virtual Disk Detail</h3>"
+
+    if ($runningVMs) {
+        $progParam.Status = "Getting Virtual Disk Detail"
+        foreach ($vm in $runningVMs) {
+            $progParam.currentOperation = $vm.name
+            Write-Progress @progParam
+            #get VHD details
+            $vhdDetail = foreach ($drive in $vm.harddrives) {
+                Try {
+                    $detail = Get-VHD -ComputerName $computername -path $drive.path -ErrorAction Stop
+                    $vhdHash = [ordered]@{
+                        ControllerType     = $drive.ControllerType
+                        ControllerNumber   = $drive.ControllerNumber
+                        ControllerLocation = $drive.ControllerLocation
+                        VHDFormat          = $detail.VHDFormat
+                        VHDType            = $detail.VHDType
+                        FileSizeMB         = [math]::Round(($detail.FileSize / 1MB), 2)
+                        SizeMB             = [math]::Round(($detail.Size / 1MB), 2)
+                        MinSizeMB          = [math]::Round(($detail.MinimumSize / 1MB), 2)
+                        FragPercent        = $detail.FragmentationPercentage
+                        Path               = $drive.path
+                    }
+                    New-Object -TypeName PSObject -Property $vhdhash
+                } #try
+                Catch {
+                    $fragments += "<p style='color:red'>$($_.Exception.Message)</p>"
+                }
+            } #foreach drive
+            if ($vhdDetail) {
+                [xml]$html = $vhdDetail | ConvertTo-HTML -Fragment
+                $caption = $html.CreateElement("caption")
+                [void]$html.table.AppendChild($caption)
+                $html.table.caption = $vm.Name
+                $fragments += $html.InnerXml
+            }
+        } #foreach vm
+    }
+    else {
+        $fragments += "<p style='color:red;'>No virtual disk files found</p>"
+    }
+
+    #endregion
+
+    #region Resource Metering
+    if ($Metering) {
+        $progParam.currentOperation = "Gathering Resource Metering Data"
+        $progparam.PercentComplete = 43
+        Write-Progress @progParam
+
+        #region Resource Pool
+        $fragments += "<h3>Resource Pool Metering</h3>"
+        #turn off error handling. There might be some resource pool data for some
+        #types
+        $data = Measure-VMResourcePool -name * -computer $computername -ErrorAction SilentlyContinue |
+            Select-Object ResourcePoolname, AvgCPU, AvgRam, MinRam, MaxRam, TotalDisk,
+        @{Name         = "NetworkInbound(M)";
+            Expression = { ($_.NetworkMeteredTrafficReport |
+                        Where-Object direction -Eq 'inbound' | Measure-Object TotalTraffic -sum).Sum
+            }
+        }, MeteringDuration
+
+        if ($data) {
+            $fragments += $data | ConvertTo-Html -Fragment
+        }
+        else {
+            $fragments += "<p style='color:red;'>No VM Resource Pool data found</p>"
+        }
+        #endregion
+
+        #region VM metering
+
+        $fragments += "<h3>VM Resource Metering</h3>"
+
+        if ($runningVMs) {
+            $data = $runningVMs | Where-Object {$_.ResourceMeteringEnabled} |
+                ForEach-Object {
+                Measure-VM -name $_.vmname -ComputerName $computername |
+                    Select-Object VMName, AvgCPU, AvgRAM, MinRam, MaxRam, TotalDisk,
+                @{Name         = "NetworkInbound(M)";
+                    Expression = { ($_.NetworkMeteredTrafficReport |
+                                Where-Object direction -Eq 'inbound' | Measure-Object TotalTraffic -sum).Sum
+                    }
+                },
+                @{Name         = "NetworkOutbound(M)";
+                    Expression = { ($_.NetworkMeteredTrafficReport |
+                                Where-Object direction -Eq 'outbound' | Measure-Object TotalTraffic -sum).Sum
+                    }
+                }, MeteringDuration
+            } #foreach
+            $fragments += $data | ConvertTo-Html -Fragment
+        }
+        else {
+            $fragments += "<p style='color:red;'>No virtual machines detected</p>"
+        }
+
+        #endregion
+    }
+    $fragments += "</div>"
+    #endregion
+
+    #region check for recent event log errors and warnings
+
+    $progParam.currentOperation = "Checking System Event Log"
+    $progparam.PercentComplete = 60
+    Write-Progress @progParam
+
+    #hashtable of parameters for Get-Eventlog
+    $logParam = @{
+        Computername = $Computername
+        LogName      = "System"
+        EntryType    = "Error", "Warning"
+        After        = (Get-Date).AddHours(-$Hours)
+    }
+    $sysLog = Get-EventLog @logparam
+    <#
 only get errors and warnings from these sources
  vmicheartbeat
  vmickvpexchange
@@ -1414,316 +1603,316 @@ only get errors and warnings from these sources
  vmictimesync
  vmicvss
 #>
-$progParam.currentOperation="Checking Application Event log"
-$progparam.PercentComplete= 65
-Write-Progress @progParam
-
-$logParam.logName="Application"
-
-$appLog = Get-EventLog @logparam -Source vmic*
-
-$Text="Event Logs"
-$div=$Text.Replace(" ","_")
-$fragments+= "<a href='javascript:toggleDiv(""$div"");' title='click to collapse or expand this section'><h2>$Text</h2></a><div id=""$div"">"
-
-$fragments+= "<h3>System</h3>"
-
-if ($syslog) {
-$syslog | Group-Object -Property Source |
-Sort Count -Descending | Foreach {
-
- [xml]$html = $_.Group | Sort TimeWritten -Descending |
- Select TimeWritten,EntryType,InstanceID,Message |
- ConvertTo-Html -Fragment
-
- $caption = $html.CreateElement("caption")
- $html.table.AppendChild($caption) | Out-Null
- $html.table.caption= $_.Name
-
- #find errors and add Alert style
-  for ($i=1;$i -le $html.table.tr.count-1;$i++) {
-  $class = $html.CreateAttribute("class")
-  #check the value of the entry type column and assign a class to the row
-  if ($html.table.tr[$i].td[1] -eq 'error') {
-    $class.value = "alert"
-    $html.table.tr[$i].Attributes.Append($class) | Out-Null
-  }
- } #for
-  #add the revised html to the fragment
-  $fragments+= $html.InnerXml
-} #foreach
-} #if System entries
-else {
-$fragments+= "<table></caption><tr><td style='color:green'>No relevant system errors or warnings found.</td></tr></table>"
-}
-$fragments+= "<h3>Application</h3>"
-if ($applog) {
-    $applog | Group-Object -Property Source |
-    Sort Count -Descending | Foreach {
-        $fragments+="<h4>$($_.Name)</h4>"
-        [xml]$html= $_.Group | Sort TimeWritten -Descending |
-        Select TimeWritten,EntryType,InstanceID,Message |
-        ConvertTo-Html -Fragment
-
-        $caption = $html.CreateElement("caption")
-        $html.table.AppendChild($caption) | Out-Null
-        $html.table.caption= $_.Name
-
-        #find errors and add Alert style
-        for ($i=1;$i -le $html.table.tr.count-1;$i++) {
-          $class = $html.CreateAttribute("class")
-          #check the value of the entry type column and assign a class to the row
-          if ($html.table.tr[$i].td[1] -eq 'error') {
-            $class.value = "alert"
-            $html.table.tr[$i].Attributes.Append($class) | Out-Null
-          }
-         } #for
-          #add the revised html to the fragment
-          $fragments+= $html.InnerXml
-    } #foreach
-} #if
-else {
-  $fragments+= "<table></caption><tr><td style='color:green'>No relevant application errors or warnings found.</td></tr></table>"
-}
-
-#region check operational logs
-$progParam.currentOperation="Checking operational event logs"
-$progparam.PercentComplete= 68
-Write-Progress @progParam
-
-$fragments+= "<h3>Operational logs</h3>"
-
-#define a hash table of parameters to splat to Get-WinEvent
-$paramHash=@{
-ErrorAction="Stop"
-ErrorVariable="MyErr"
-Computername=$Computername
-}
-
-$start = (Get-Date).AddHours(-$hours)
-
-#construct a hash table for the -FilterHashTable parameter in Get-WinEvent
-$filter= @{
-Logname= "Microsoft-Windows-Hyper-V*"
-Level=2,3
-StartTime= $start
-}
-
-#add it to the parameter hash table
-$paramHash.Add("FilterHashTable",$filter)
-
-#search logs for errors and warnings
-Try {
-    #add a property for each entry that translates the SID into
-    #the account name
-    #hash table of parameters for Get-WSManInstance
-    $script:newHash=@{
-     ResourceURI="wmicimv2/win32_SID"
-     SelectorSet=$null
-     Computername=$Computername
-     ErrorAction="Stop"
-     ErrorVariable="myErr"
-    }
-    $oplogs = Get-WinEvent @paramHash  |
-    Add-Member -MemberType ScriptProperty -Name Username -Value {
-    Try {
-        #resolve the SID
-        $script:newHash.SelectorSet=@{SID="$($this.userID)"}
-        $resolved = Get-WSManInstance @script:newhash
-    }
-    Catch {
-       Write-Warning $myerr.ErrorRecord
-    }
-    if ($resolved.accountname) {
-        #write the resolved name to the pipeline
-        "$($Resolved.ReferencedDomainName)\$($Resolved.Accountname)"
-    }
-    else {
-        #re-use the SID
-        $this.userID
-    }
-    } -PassThru
-
-}
-Catch {
-    Write-Warning $MyErr.errorRecord
-}
-
-if ($oplogs) {
- $oplogs | Group-Object -Property Logname |
-    Sort Count -Descending | Foreach {
-        [xml]$html= $_.Group | Sort TimeCreated -Descending |
-        Select TimeCreated,@{Name="EntryType";Expression={$_.levelDisplayname}},
-        ID,Username,Message |
-        ConvertTo-Html -Fragment
-
-        $caption = $html.CreateElement("caption")
-        $html.table.AppendChild($caption) | Out-Null
-        $html.table.caption= $_.Name
-
-        #find errors and add Alert style
-        for ($i=1;$i -le $html.table.tr.count-1;$i++) {
-          $class = $html.CreateAttribute("class")
-          #check the value of the entry type column and assign a class to the row
-          if ($html.table.tr[$i].td[1] -eq 'error') {
-            $class.value = "alert"
-            $html.table.tr[$i].Attributes.Append($class) | Out-Null
-          }
-         } #for
-          #add the revised html to the fragment
-          $fragments+= $html.InnerXml
-    } #foreach
-
-}
-else {
- $fragments+= "<table></caption><tr><td style='color:green'>No relevant application errors or warnings found.</td></tr></table>"
-}
-$fragments+="</div>"
-#endregion
-
-#endregion
-
-#region get performance data
-if ($Performance) {
-$progParam.status="Gathering Performance Data"
-$progparam.PercentComplete= 70
-$progParam.currentOperation="..System"
-Write-Progress @progParam
-
-$Text="Performance"
-$div=$Text.Replace(" ","_")
-$fragments+= "<a href='javascript:toggleDiv(""$div"");' title='click to collapse or expand this section'><h2>$Text</h2></a><div id=""$div"">"
-
-#system
-$ctrs = "\System\Processes","\System\Threads","\System\Processor Queue Length"
-$sysCounters = Get-Counter -counter $ctrs -computername $Computername
-
-[xml]$html= $sysCounters | Select -expand CounterSamples |
-Select Path,@{Name="Value";Expression={$_.CookedValue}} |
-ConvertTo-HTML -Fragment
-
-$caption = $html.CreateElement("caption")
-$html.table.AppendChild($caption) | Out-Null
-$html.table.caption= "System"
-$fragments+=$html.InnerXml
-
-#memory
-$progParam.currentOperation="..Memory"
-$progparam.PercentComplete= 72
-Write-Progress @progParam
-
-$ctrs="\Memory\Page Faults/sec",
-"\Memory\% Committed Bytes In Use",
-"\Memory\Available MBytes"
-$memCounters = Get-Counter -counter $ctrs -computername $Computername
-
-[xml]$html= $memCounters | Select -expand CounterSamples |
-Select Path,@{Name="Value";Expression={$_.CookedValue}} |
-ConvertTo-HTML -Fragment
-
-$caption = $html.CreateElement("caption")
-$html.table.AppendChild($caption) | Out-Null
-$html.table.caption= "Memory"
-$fragments+=$html.InnerXml
-
-#cpu
-$progParam.currentOperation="..Processor"
-$progparam.PercentComplete= 75
-Write-Progress @progParam
-
-$ctrs="\Processor(*)\% Processor Time"
-$procCounters = Get-Counter -counter $ctrs -computername $Computername
-
-[xml]$html= $procCounters | Select -expand CounterSamples |
-Select Path,@{Name="Value";Expression={$_.CookedValue}} |
-ConvertTo-HTML -Fragment
-
-$caption = $html.CreateElement("caption")
-$html.table.AppendChild($caption) | Out-Null
-$html.table.caption= "Processor"
-$fragments+=$html.InnerXml
-
-#physicaldisk
-$progParam.currentOperation="..PhysicalDisk"
-$progparam.PercentComplete= 77
-Write-Progress @progParam
-
-$ctrs="\PhysicalDisk(*)\Current Disk Queue Length",
-"\PhysicalDisk(*)\Avg. Disk Queue Length",
-"\PhysicalDisk(*)\Avg. Disk Read Queue Length",
-"\PhysicalDisk(*)\Avg. Disk Write Queue Length",
-"\PhysicalDisk(*)\% Disk Time",
-"\PhysicalDisk(*)\% Disk Read Time",
-"\PhysicalDisk(*)\% Disk Write Time"
-
-Try {
-    $diskCounters = Get-Counter -counter $ctrs -computername $Computername -ErrorAction Stop
-    $data = $diskCounters | Select -ExpandProperty CounterSamples |
-Where CookedValue -gt 0
-}
-Catch {
-    $fragments+= "<table><caption>$($counterset.CounterSetName)</caption><tr><td style='color:red'>$($_.Exception.Message)</td></tr></table>"
-}
-
-if ($data) {
-    #non zero data found
-    [xml]$html= $data |
-    Select Path,@{Name="Value";Expression={$_.CookedValue}} |
-    ConvertTo-HTML -Fragment
-
-    $caption = $html.CreateElement("caption")
-    $html.table.AppendChild($caption) | Out-Null
-    $html.table.caption= "Physical Disk"
-    $fragments+=$html.InnerXml
-}
-else {
- $fragments+= "<table><caption>$($counterset.CounterSetName)</caption><tr><td style='color:green'>No non-zero values for this counter set.</td></tr></table>"
-}
-#Hyper-V Perf counters
-$progParam.status="Getting Hyper-V Performance Counters"
-$progparam.PercentComplete= 80
-Write-Progress @progParam
-
-$hvCounters = Get-Counter -ListSet Hyper-V* -ComputerName $computername
-
-$data = foreach ($counterset in $hvcounters) {
-    $progParam.currentOperation=$counterset.countersetname
+    $progParam.currentOperation = "Checking Application Event log"
+    $progparam.PercentComplete = 65
     Write-Progress @progParam
 
-    #create reports for any counter with a value greater than 0
-    try {
-        $data = Get-Counter -Counter $counterset.counter -Computername $computername -ErrorAction Stop |
-        Select -ExpandProperty CounterSamples |
-        Where CookedValue -gt 0 |
-        Sort Path | Select Path,@{Name="Value";Expression={$_.CookedValue}}
+    $logParam.logName = "Application"
+
+    $appLog = Get-EventLog @logparam -Source vmic*
+
+    $Text = "Event Logs"
+    $div = $Text.Replace(" ", "_")
+    $fragments += "<a href='javascript:toggleDiv(""$div"");' title='click to collapse or expand this section'><h2>$Text</h2></a><div id=""$div"">"
+
+    $fragments += "<h3>System</h3>"
+
+    if ($syslog) {
+        $syslog | Group-Object -Property Source |
+            Sort-Object Count -Descending | ForEach-Object {
+
+            [xml]$html = $_.Group | Sort-Object TimeWritten -Descending |
+                Select-Object TimeWritten, EntryType, InstanceID, Message |
+                ConvertTo-Html -Fragment
+
+            $caption = $html.CreateElement("caption")
+            [void]$html.table.AppendChild($caption)
+            $html.table.caption = $_.Name
+
+            #find errors and add Alert style
+            for ($i = 1; $i -le $html.table.tr.count - 1; $i++) {
+                $class = $html.CreateAttribute("class")
+                #check the value of the entry type column and assign a class to the row
+                if ($html.table.tr[$i].td[1] -eq 'error') {
+                    $class.value = "alert"
+                    [void]$html.table.tr[$i].Attributes.Append($class)
+                }
+            } #for
+            #add the revised html to the fragment
+            $fragments += $html.InnerXml
+        } #foreach
+    } #if System entries
+    else {
+        $fragments += "<table></caption><tr><td style='color:green'>No relevant system errors or warnings found.</td></tr></table>"
+    }
+    $fragments += "<h3>Application</h3>"
+    if ($applog) {
+        $applog | Group-Object -Property Source |
+            Sort-Object Count -Descending | ForEach-Object {
+            $fragments += "<h4>$($_.Name)</h4>"
+            [xml]$html = $_.Group | Sort-Object TimeWritten -Descending |
+                Select-Object TimeWritten, EntryType, InstanceID, Message |
+                ConvertTo-Html -Fragment
+
+            $caption = $html.CreateElement("caption")
+            [void]$html.table.AppendChild($caption)
+            $html.table.caption = $_.Name
+
+            #find errors and add Alert style
+            for ($i = 1; $i -le $html.table.tr.count - 1; $i++) {
+                $class = $html.CreateAttribute("class")
+                #check the value of the entry type column and assign a class to the row
+                if ($html.table.tr[$i].td[1] -eq 'error') {
+                    $class.value = "alert"
+                    [void]$html.table.tr[$i].Attributes.Append($class)
+                }
+            } #for
+            #add the revised html to the fragment
+            $fragments += $html.InnerXml
+        } #foreach
+    } #if
+    else {
+        $fragments += "<table></caption><tr><td style='color:green'>No relevant application errors or warnings found.</td></tr></table>"
+    }
+
+    #region check operational logs
+    $progParam.currentOperation = "Checking operational event logs"
+    $progparam.PercentComplete = 68
+    Write-Progress @progParam
+
+    $fragments += "<h3>Operational logs</h3>"
+
+    #define a hash table of parameters to splat to Get-WinEvent
+    $paramHash = @{
+        ErrorAction   = "Stop"
+        ErrorVariable = "MyErr"
+        Computername  = $Computername
+    }
+
+    $start = (Get-Date).AddHours(-$hours)
+
+    #construct a hash table for the -FilterHashTable parameter in Get-WinEvent
+    $filter = @{
+        Logname   = "Microsoft-Windows-Hyper-V*"
+        Level     = 2, 3
+        StartTime = $start
+    }
+
+    #add it to the parameter hash table
+    $paramHash.Add("FilterHashTable", $filter)
+
+    #search logs for errors and warnings
+    Try {
+        #add a property for each entry that translates the SID into
+        #the account name
+        #hash table of parameters for Get-WSManInstance
+        $script:newHash = @{
+            ResourceURI   = "wmicimv2/win32_SID"
+            SelectorSet   = $null
+            Computername  = $Computername
+            ErrorAction   = "Stop"
+            ErrorVariable = "myErr"
+        }
+        $oplogs = Get-WinEvent @paramHash  |
+            Add-Member -MemberType ScriptProperty -Name Username -Value {
+            Try {
+                #resolve the SID
+                $script:newHash.SelectorSet = @{SID = "$($this.userID)"}
+                $resolved = Get-WSManInstance @script:newhash
+            }
+            Catch {
+                Write-Warning $myerr.ErrorRecord
+            }
+            if ($resolved.accountname) {
+                #write the resolved name to the pipeline
+                "$($Resolved.ReferencedDomainName)\$($Resolved.Accountname)"
+            }
+            else {
+                #re-use the SID
+                $this.userID
+            }
+        } -PassThru
+
+    }
+    Catch {
+        Write-Warning $MyErr.errorRecord
+    }
+
+    if ($oplogs) {
+        $oplogs | Group-Object -Property Logname |
+            Sort-Object Count -Descending | ForEach-Object {
+            [xml]$html = $_.Group | Sort-Object TimeCreated -Descending |
+                Select-Object TimeCreated, @{Name = "EntryType"; Expression = {$_.levelDisplayname}},
+            ID, Username, Message |
+                ConvertTo-Html -Fragment
+
+            $caption = $html.CreateElement("caption")
+            [void]$html.table.AppendChild($caption)
+            $html.table.caption = $_.Name
+
+            #find errors and add Alert style
+            for ($i = 1; $i -le $html.table.tr.count - 1; $i++) {
+                $class = $html.CreateAttribute("class")
+                #check the value of the entry type column and assign a class to the row
+                if ($html.table.tr[$i].td[1] -eq 'error') {
+                    $class.value = "alert"
+                    [void]$html.table.tr[$i].Attributes.Append($class)
+                }
+            } #for
+            #add the revised html to the fragment
+            $fragments += $html.InnerXml
+        } #foreach
+
+    }
+    else {
+        $fragments += "<table></caption><tr><td style='color:green'>No relevant application errors or warnings found.</td></tr></table>"
+    }
+    $fragments += "</div>"
+    #endregion
+
+    #endregion
+
+    #region get performance data
+    if ($Performance) {
+        $progParam.status = "Gathering Performance Data"
+        $progparam.PercentComplete = 70
+        $progParam.currentOperation = "..System"
+        Write-Progress @progParam
+
+        $Text = "Performance"
+        $div = $Text.Replace(" ", "_")
+        $fragments += "<a href='javascript:toggleDiv(""$div"");' title='click to collapse or expand this section'><h2>$Text</h2></a><div id=""$div"">"
+
+        #system
+        $ctrs = "\System\Processes", "\System\Threads", "\System\Processor Queue Length"
+        $sysCounters = Get-Counter -counter $ctrs -computername $Computername
+
+        [xml]$html = $sysCounters | Select-Object -expand CounterSamples |
+            Select-Object Path, @{Name = "Value"; Expression = {$_.CookedValue}} |
+            ConvertTo-HTML -Fragment
+
+        $caption = $html.CreateElement("caption")
+        [void]$html.table.AppendChild($caption)
+        $html.table.caption = "System"
+        $fragments += $html.InnerXml
+
+        #memory
+        $progParam.currentOperation = "..Memory"
+        $progparam.PercentComplete = 72
+        Write-Progress @progParam
+
+        $ctrs = "\Memory\Page Faults/sec",
+        "\Memory\% Committed Bytes In Use",
+        "\Memory\Available MBytes"
+        $memCounters = Get-Counter -counter $ctrs -computername $Computername
+
+        [xml]$html = $memCounters | Select-Object -expand CounterSamples |
+            Select-Object Path, @{Name = "Value"; Expression = {$_.CookedValue}} |
+            ConvertTo-HTML -Fragment
+
+        $caption = $html.CreateElement("caption")
+        [void]$html.table.AppendChild($caption)
+        $html.table.caption = "Memory"
+        $fragments += $html.InnerXml
+
+        #cpu
+        $progParam.currentOperation = "..Processor"
+        $progparam.PercentComplete = 75
+        Write-Progress @progParam
+
+        $ctrs = "\Processor(*)\% Processor Time"
+        $procCounters = Get-Counter -counter $ctrs -computername $Computername
+
+        [xml]$html = $procCounters | Select-Object -expand CounterSamples |
+            Select-Object Path, @{Name = "Value"; Expression = {$_.CookedValue}} |
+            ConvertTo-HTML -Fragment
+
+        $caption = $html.CreateElement("caption")
+        [void]$html.table.AppendChild($caption)
+        $html.table.caption = "Processor"
+        $fragments += $html.InnerXml
+
+        #physicaldisk
+        $progParam.currentOperation = "..PhysicalDisk"
+        $progparam.PercentComplete = 77
+        Write-Progress @progParam
+
+        $ctrs = "\PhysicalDisk(*)\Current Disk Queue Length",
+        "\PhysicalDisk(*)\Avg. Disk Queue Length",
+        "\PhysicalDisk(*)\Avg. Disk Read Queue Length",
+        "\PhysicalDisk(*)\Avg. Disk Write Queue Length",
+        "\PhysicalDisk(*)\% Disk Time",
+        "\PhysicalDisk(*)\% Disk Read Time",
+        "\PhysicalDisk(*)\% Disk Write Time"
+
+        Try {
+            $diskCounters = Get-Counter -counter $ctrs -computername $Computername -ErrorAction Stop
+            $data = $diskCounters | Select-Object -ExpandProperty CounterSamples |
+                Where-Object CookedValue -gt 0
+        }
+        Catch {
+            $fragments += "<table><caption>$($counterset.CounterSetName)</caption><tr><td style='color:red'>$($_.Exception.Message)</td></tr></table>"
+        }
+
         if ($data) {
-            [xml]$html= $data  | ConvertTo-HTML -Fragment
-            $caption= $html.CreateElement("caption")
-            $html.table.AppendChild($caption) | Out-Null
-            $html.table.caption= $counterset.CounterSetName
-            $fragments+=$html.InnerXml
+            #non zero data found
+            [xml]$html = $data |
+                Select-Object Path, @{Name = "Value"; Expression = {$_.CookedValue}} |
+                ConvertTo-HTML -Fragment
+
+            $caption = $html.CreateElement("caption")
+            [void]$html.table.AppendChild($caption)
+            $html.table.caption = "Physical Disk"
+            $fragments += $html.InnerXml
         }
         else {
-            $fragments+= "<table><caption>$($counterset.CounterSetName)</caption><tr><td style='color:green'>No non-zero values for this counter set.</td></tr></table>"
+            $fragments += "<table><caption>$($counterset.CounterSetName)</caption><tr><td style='color:green'>No non-zero values for this counter set.</td></tr></table>"
         }
-    } #try
-    Catch {
-        $fragments+= "<table><caption>$($counterset.CounterSetName)</caption><tr><td style='color:red'>$($_.Exception.Message)</td></tr></table>"
-    }
-}
-$fragments+="</div>"
-} #if not $NoPerformance
+        #Hyper-V Perf counters
+        $progParam.status = "Getting Hyper-V Performance Counters"
+        $progparam.PercentComplete = 80
+        Write-Progress @progParam
 
-#endregion
+        $hvCounters = Get-Counter -ListSet Hyper-V* -ComputerName $computername
 
-#region create HTML report
-$progParam.status="Creating HTML Report"
-$progParam.currentOperation=$Path
-$progParam.percentcomplete=90
-Write-Progress @progParam
+        $data = foreach ($counterset in $hvcounters) {
+            $progParam.currentOperation = $counterset.countersetname
+            Write-Progress @progParam
 
-$title = "$($os.CSName) Hyper-V Health Report"
-$head = @"
+            #create reports for any counter with a value greater than 0
+            try {
+                $data = Get-Counter -Counter $counterset.counter -Computername $computername -ErrorAction Stop |
+                    Select-Object -ExpandProperty CounterSamples |
+                    Where-Object CookedValue -gt 0 |
+                    Sort-Object Path | Select-Object Path, @{Name = "Value"; Expression = {$_.CookedValue}}
+                if ($data) {
+                    [xml]$html = $data  | ConvertTo-HTML -Fragment
+                    $caption = $html.CreateElement("caption")
+                    [void]$html.table.AppendChild($caption)
+                    $html.table.caption = $counterset.CounterSetName
+                    $fragments += $html.InnerXml
+                }
+                else {
+                    $fragments += "<table><caption>$($counterset.CounterSetName)</caption><tr><td style='color:green'>No non-zero values for this counter set.</td></tr></table>"
+                }
+            } #try
+            Catch {
+                $fragments += "<table><caption>$($counterset.CounterSetName)</caption><tr><td style='color:red'>$($_.Exception.Message)</td></tr></table>"
+            }
+        }
+        $fragments += "</div>"
+    } #if not $NoPerformance
+
+    #endregion
+
+    #region create HTML report
+    $progParam.status = "Creating HTML Report"
+    $progParam.currentOperation = $Path
+    $progParam.percentcomplete = 90
+    Write-Progress @progParam
+
+    $title = "$($os.CSName) Hyper-V Health Report"
+    $head = @"
 <Title>$($Title)</Title>
 <style>
 h2
@@ -1798,28 +1987,28 @@ function toggleAll() {
 <br><br><br>
 "@
 
-$footer=@"
+    $footer = @"
 <p style='color:green'><i>Created $(Get-Date) by $($env:userdomain)\$($env:username)
 <br>Brought to you by <a href='http://www.altaro.com/hyper-v/' target='_blank'>
 Altaro</a></i>
 <br><i>v$reportversion</i>
 "@
 
-$paramHash=@{
-Head= $head
-Body = $fragments
-Postcontent= $footer
-}
+    $paramHash = @{
+        Head        = $head
+        Body        = $fragments
+        Postcontent = $footer
+    }
 
-ConvertTo-Html @paramHash | Out-File -FilePath $path -encoding ASCII
+    ConvertTo-Html @paramHash | Out-File -FilePath $path -encoding ASCII
 
-$progParam.status="Creating HTML Report"
-$progParam.currentOperation="Finished"
-$progParam.percentcomplete=100
-Write-Progress @progParam -Completed
+    $progParam.status = "Creating HTML Report"
+    $progParam.currentOperation = "Finished"
+    $progParam.percentcomplete = 100
+    Write-Progress @progParam -Completed
 
-Write-Host "Report complete. Please see $(Resolve-Path $path)" -ForegroundColor Green
+    Write-Host "Report complete. Please see $(Resolve-Path $path)" -ForegroundColor Green
 
-#endregion
+    #endregion
 
 } #close new report function

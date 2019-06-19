@@ -1,4 +1,5 @@
 
+#these are private, helper functions that are not exported to the user.
 
 Function _getConfigFile {
     [cmdletbinding()]

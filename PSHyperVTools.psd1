@@ -8,7 +8,7 @@
     RootModule = 'PSHyperVTools.psm1'
 
     # Version number of this module.
-    ModuleVersion = '0.4.0'
+    ModuleVersion = '0.5.0'
 
     # Supported PSEditions
     CompatiblePSEditions = @('Desktop')
@@ -67,7 +67,7 @@
     # Functions to export from this module, for best performance, do not use wildcards and do not delete the entry, use an empty array if there are no functions to export.
     FunctionsToExport = 'Stop-VMGroup','Start-VMGroup','Expand-VMGroup',
     'Find-VMGroup','Get-VMIPAddress','Open-VMRemoteDesktop','Open-VMConnect',
-    'Get-VMState','Get-VMMemorySummary'
+    'Get-VMState','Get-VMMemorySummary','Set-VMNote'
 
     # Cmdlets to export from this module, for best performance, do not use wildcards and do not delete the entry, use an empty array if there are no cmdlets to export.
     CmdletsToExport = ''
@@ -93,7 +93,7 @@
         PSData = @{
 
             # Tags applied to this module. These help with module discovery in online galleries.
-            Tags = @("HyperV","Hyper-V")
+            Tags = @("HyperV","Hyper-V","virtualization")
 
             # A URL to the license for this module.
             LicenseUri = 'https://github.com/jdhitsolutions/PSHyperV/blob/master/license.txt'

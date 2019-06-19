@@ -1,5 +1,13 @@
 # Change Log for PSHyperVTools
 
+## v0.5.0
+
++ replaced instances of using `Out-Null` to casting to `[void]`
++ Cleanup of legacy code expanding aliases to full command names
++ Added `Set-VMNote`
++ Updated documentation
++ Updated `README.md`
+
 ## v0.4.0
 
 + Added new type extensions file.
