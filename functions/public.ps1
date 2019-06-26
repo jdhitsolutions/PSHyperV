@@ -34,7 +34,7 @@ Function Set-VMNote {
     )
     DynamicParam {
     #allow an alternate credential for remote servers
-        if ($Computername -ne $env:computername -OR $vm[0].computername -ne $env:computername) {
+        if ($Computername -ne $env:computername -OR ($VM -AND $vm[0].computername -ne $env:computername)) {
 
             #define a parameter attribute object
             $attributes = New-Object System.Management.Automation.ParameterAttribute

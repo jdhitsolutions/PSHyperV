@@ -1,5 +1,9 @@
 # Change Log for PSHyperVTools
 
+## v0.5.1
+
++ Fixed bug with dynamic parameter in `Set-VMNnote`
+
 ## v0.5.0
 
 + replaced instances of using `Out-Null` to casting to `[void]`
